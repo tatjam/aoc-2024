@@ -69,3 +69,8 @@ function visitedmap(map)
 
     return visitedmap
 end
+
+function solve1()
+    map = readmap()
+    return count(x -> x == true, visitedmap(map))
+end
