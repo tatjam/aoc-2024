@@ -28,34 +28,36 @@ end
 # Returns nothing if guard goes out of map,
 # otherwise returns (nguardpos, nguarddir)
 function guardstep(obstaclemap, guardpos, guarddir)
-    nguardpos = guardpos .+ guarddir
-    if !checkbounds(Bool, obstaclemap, nguardpos...)
-        return nothing
-    end
-
+    nguardpos = guardpos
     nguarddir = guarddir
-    if obstaclemap[nguardpos...]
-        # Turn right
-        nguardpos = guardpos
-        if guarddir == (-1, 0)
-            nguarddir = (0, 1)
-        elseif guarddir == (0, 1)
-            nguarddir = (1, 0)
-        elseif guarddir == (1, 0)
-            nguarddir = (0, -1)
-        elseif guarddir == (0, -1)
-            nguarddir = (-1, 0)
+    while nguardpos == guardpos
+        nguardpos = guardpos .+ nguarddir
+        if !checkbounds(Bool, obstaclemap, nguardpos...)
+            return nothing
+        end
+        if obstaclemap[nguardpos...]
+            # Turn right
+            nguardpos = guardpos
+            if nguarddir == (-1, 0)
+                nguarddir = (0, 1)
+            elseif nguarddir == (0, 1)
+                nguarddir = (1, 0)
+            elseif nguarddir == (1, 0)
+                nguarddir = (0, -1)
+            elseif nguarddir == (0, -1)
+                nguarddir = (-1, 0)
+            end
         end
     end
-
     return (nguardpos, nguarddir)
+
 end
 
 function visitedmap(map)
-    visitedmap = fill(false, size(map.obstaclemap))
+    visitedmap = fill((0, 0), size(map.obstaclemap))
     guardpos = map.guardstart
     guarddir = (-1, 0)
-    visitedmap[guardpos...] = true
+    visitedmap[guardpos...] = (-1, 0)
 
     while true
         tuple = guardstep(map.obstaclemap, guardpos, guarddir)
@@ -64,7 +66,11 @@ function visitedmap(map)
         else
             (guardpos, guarddir) = tuple
         end
-        visitedmap[tuple[1]...] = true
+        if visitedmap[guardpos...] == guarddir
+            # loop found
+            return nothing
+        end
+        visitedmap[tuple[1]...] = guarddir
     end
 
     return visitedmap
@@ -72,5 +78,21 @@ end
 
 function solve1()
     map = readmap()
-    return count(x -> x == true, visitedmap(map))
+    return count(x -> x != (0, 0), visitedmap(map))
+end
+
+function bruteforcesolve2()
+    map = readmap()
+
+    sum = 0
+    for idx ∈ eachindex(map.obstaclemap)
+        nobstaclemap = copy(map.obstaclemap)
+        nobstaclemap[idx] = true
+        nmap = Map(map.guardstart, nobstaclemap)
+        if isnothing(visitedmap(nmap))
+            sum += 1
+            display(sum)
+        end
+    end
+    return sum
 end
