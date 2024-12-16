@@ -1,6 +1,7 @@
-using Graphs
-using NamedGraphs
-using GLMakie, SGtSNEpi
+using DataStructures
+
+# Use this to display UInt as decimals
+# Base.show(io::IO, x::T) where {T<:Union{UInt, UInt128, UInt64, UInt32, UInt16, UInt8}} = Base.print(io, x)
 
 function getstones()
     line = readlines("11_input.txt")[1]
@@ -35,83 +36,40 @@ function applyrule(stone)
     return out
 end
 
-# At every node that bifurcates, we find the minimum of time for another bifurcation
-# (Returns an array as big as the bifurcation set)
-# At most n is returned
-function mintobifurcation(bifurcating, graph, n)
-    out = fill(n + 1, length(bifurcating))
-
-    for i in eachindex(bifurcating)
-        open = neighbors(graph, bifurcating[i])
-
-        for it in 1:n
-            found = false
-            for j in eachindex(open)
-                ns = neighbors(graph, open[j])
-                if length(ns) == 2
-                    found = true
-                    break
-                else
-                    # This is safe as we replace the open we just inspected
-                    open[j] = ns[1]
-                end
-            end
-            if found
-                out[i] = it
-                break
-            end
-        end
-    end
-
-    return out
-end
-
-# We only need to decompose each stone once, so we can build a graph 
-# with each stone and its decomposition diagram.
-# To build this graph, we run the iterations, but instead of just 
-# blindly evaluating each stone, we allow it to either decompose into
-# new stones or to link to existing ones
-# 
+# Because the order, and count of stones doesn't matter, we can use a set and only
+# solve each stone once
 function smartsolve(stones, n)
-    graph = NamedDiGraph{UInt64}()
-    unconnected = Set{UInt64}()
-
-    bifurcating = Set{UInt64}()
-
+    # First is stone value, second is number of stones
+    stoneset = Accumulator{UInt64,Int64}()
     for stone in stones
-        add_vertex!(graph, stone)
-        push!(unconnected, stone)
+        inc!(stoneset, stone)
     end
 
-    for i in 1:n
-        new_unconnected = Set{UInt64}()
-        for explore in unconnected
-            results = applyrule(explore)
-            for result in results
-                if !has_vertex(graph, result)
-                    add_vertex!(graph, result)
-                    push!(new_unconnected, result)
+    for it in 1:n
+        nstoneset = Accumulator{UInt64,Int64}()
+        for stone in stoneset
+            if stone.second == 0
+                reset!(stoneset, stone.first)
+            else
+                result = applyrule(stone.first)
+                for nstone in result
+                    inc!(nstoneset, nstone, stone.second)
                 end
-                add_edge!(graph, explore, result)
-            end
-            if length(results) == 2
-                push!(bifurcating, explore)
             end
         end
-        unconnected = new_unconnected
+        stoneset = nstoneset
     end
 
-    bifurcating = collect(bifurcating)
+    for stone in stoneset
+        if stone.second == 0
+            reset!(stoneset, stone.first)
+        end
+    end
 
-    mintobif = mintobifurcation(bifurcating, graph, n)
-
-    # Any edge which ends in a non-bifurcating node can be simplified
-    # We iteratively trim all edges that end in non-bifurcating nodes, as
-    # these do not create new stones.
-
-    return graph, mintobif
-end
-
-function solve1()
-
+    # At the end we simply count
+    total = 0
+    for stone in stoneset
+        total += stone.second
+    end
+    return total
 end
