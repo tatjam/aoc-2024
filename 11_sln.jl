@@ -1,5 +1,6 @@
 using Graphs
 using NamedGraphs
+using GLMakie, SGtSNEpi
 
 function getstones()
     line = readlines("11_input.txt")[1]
@@ -34,16 +35,48 @@ function applyrule(stone)
     return out
 end
 
+# At every node that bifurcates, we find the minimum of time for another bifurcation
+# (Returns an array as big as the bifurcation set)
+# At most n is returned
+function mintobifurcation(bifurcating, graph, n)
+    out = fill(n + 1, length(bifurcating))
+
+    for i in eachindex(bifurcating)
+        open = neighbors(graph, bifurcating[i])
+
+        for it in 1:n
+            found = false
+            for j in eachindex(open)
+                ns = neighbors(graph, open[j])
+                if length(ns) == 2
+                    found = true
+                    break
+                else
+                    # This is safe as we replace the open we just inspected
+                    open[j] = ns[1]
+                end
+            end
+            if found
+                out[i] = it
+                break
+            end
+        end
+    end
+
+    return out
+end
+
 # We only need to decompose each stone once, so we can build a graph 
 # with each stone and its decomposition diagram.
 # To build this graph, we run the iterations, but instead of just 
 # blindly evaluating each stone, we allow it to either decompose into
 # new stones or to link to existing ones
-# After everything is done we step through the graph and find how many stones 
-# remain
+# 
 function smartsolve(stones, n)
     graph = NamedDiGraph{UInt64}()
     unconnected = Set{UInt64}()
+
+    bifurcating = Set{UInt64}()
 
     for stone in stones
         add_vertex!(graph, stone)
@@ -55,16 +88,30 @@ function smartsolve(stones, n)
         for explore in unconnected
             results = applyrule(explore)
             for result in results
-                if has_vertex(graph, result)
-                    add_edge!(graph, explore, result)
-                else
+                if !has_vertex(graph, result)
                     add_vertex!(graph, result)
                     push!(new_unconnected, result)
                 end
+                add_edge!(graph, explore, result)
+            end
+            if length(results) == 2
+                push!(bifurcating, explore)
             end
         end
         unconnected = new_unconnected
     end
 
-    return graph
+    bifurcating = collect(bifurcating)
+
+    mintobif = mintobifurcation(bifurcating, graph, n)
+
+    # Any edge which ends in a non-bifurcating node can be simplified
+    # We iteratively trim all edges that end in non-bifurcating nodes, as
+    # these do not create new stones.
+
+    return graph, mintobif
+end
+
+function solve1()
+
 end
