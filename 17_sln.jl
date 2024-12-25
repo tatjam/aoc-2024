@@ -1,9 +1,14 @@
 using DataStructures
+using LinearAlgebra
+using JuMP
+using Juniper
+using Ipopt
+
 
 mutable struct SystemState
-    A::BigInt
-    B::BigInt
-    C::BigInt
+    A::Int64
+    B::Int64
+    C::Int64
     prog::Array{UInt8}
     PC::UInt64
     out::Array{UInt8}
@@ -49,8 +54,6 @@ function statestep!(state)
     if state.PC > length(state.prog) - 2
         return false
     end
-
-    display(state.B)
 
     ins = state.prog[state.PC+1]
     step = true
@@ -106,137 +109,129 @@ function run!(state)
     display(string(ostr))
 end
 
-# We use a slightly confusing notation where the bit in 
-# bits[i] is the ith bit. Thus, in the display, the bits
-# are revered! (This is similar to Julia's digits)
-struct KnownBits
-    bits::BitArray{}
-    known::BitArray{}
+function basestate()
+    st = load_systemstate_and_program()
+    st.A = 0
+    return st
 end
 
-function emptyknownbits(n)
-    return KnownBits(falses(n), falses(n))
+function reset!(st)
+    st.A = 0
+    st.B = 0
+    st.C = 0
+    st.PC = 0
+    empty!(st.out)
 end
 
-function knownnumber(x, n)
-    return KnownBits(digits(x, base=2, pad=n), trues(n))
-end
 
-
-function knowbit!(kb::KnownBits, i, v)
-    kb.bits[i] = v
-    kb.known[i] = true
-end
-
-# Shifting right moves bits to the LEFT in our representation
-# (to lower rindices)
-function shr(kb::KnownBits, n)::KnownBits
-    if n > length(kb.bits)
-        return knownnumber(0, length(kb.bits))
-    end
-    out = emptyknownbits(length(kb.bits))
-    for i = 1:(length(kb.bits)-n)
-        out.bits[i] = kb.bits[i+n]
-        out.known[i] = kb.known[i+n]
-    end
-    for i = (length(kb.bits)-n+1):length(kb.bits)
-        out.bits[i] = 0
-        out.known[i] = 1
+# Tests every bit in A of the input to state and builds how it,
+# INDEPENDENTLY affects the output.
+function influencemap(st, n)
+    out = Matrix{Int32}(undef, (n, length(st.prog)))
+    # None except max set run 
+    reset!(st)
+    st.A = 1 << n
+    run!(st)
+    default = convert.(Int32, st.out)
+    for i in 0:(n-1)
+        reset!(st)
+        st.A = (1 << i | 1 << n)
+        run!(st)
+        out[i+1, :] .= convert.(Int32, st.out) .- default
     end
     return out
 end
 
-# Most significant 1, returned as bit position (length - i)
-# If no significant 1 is found, -1 is returned
-function ms1(kb::KnownBits)::Int64
-    for i in eachindex(kb.known)
-        if kb.known[i] && kb.bits[i]
-            return length(kb.known) - i + 1
+# First approximation, estimates a large quantity of bits.
+# Last quantity is found by bruteforce
+function buildquine(st)
+    # Note that all starting output numbers, except for the very last two,
+    # depend only on 5 bits of the starting value, such that each bit of output 
+    # only overlaps with two bits of the other (except the last few bits which 
+    # are found by bruteforce)
+    # Thus to build a solution we simply bruteforce the bits in blocks of 8, checking
+    # two output numbers, and that we don't mess up the solution to our left!
+    # We leave the last three numbers to be found by bruteforce
+
+    bits = zeros(Int32, 46)
+    bits[46] = 1
+    bits[1] = 0
+    for out in 1:15
+        @bp
+        # We change every bit, checking both our output and left neighbor until we 
+        # get the result right
+        good = false
+        for comb in 0:(2^12-1)
+            wpos = (out - 1) * 3 + 1
+            digs = digits(comb, base=2, pad=12)
+            for bit in 1:12
+                if bit + wpos - 1 < 46
+                    bits[bit+wpos-1] = digs[bit]
+                end
+            end
+            testbits(st, bits)
+            if st.out[out] == st.prog[out] && st.out[out+1] == st.prog[out+1]
+                good = true
+            end
+            if out != 1
+                if st.out[out-1] != st.prog[out-1]
+                    good = false
+                end
+            end
+            if good
+                break
+            end
+        end
+        display(out)
+        if !good
+            display("NOT GOOD!")
+            return bits
         end
     end
-    return -1
 end
 
-function isfullyknown(kb::KnownBits)
-    for v in kb.known
-        if v == false
-            return false
+function finish_bruteforce(st, bits)
+    # Last 7 digits need to be bruteforced. This means changing 
+    # 21 bits, which can be done in reasonable time 
+    for comb in 0:(2^21-1)
+        digs = digits(comb, base=2, pad=21)
+        for bit in 1:21
+            bits[46-bit] = digs[bit]
+        end
+        testbits(st, bits)
+        if st.out == st.prog
+            return bits
         end
     end
-    return true
 end
 
-function tonumber(kb::KnownBits)::Int64
-    z = Int64(0)
-    for i in eachindex(kb.bits)
-        if kb.bits[i]
-            z |= 1 << (i - 1)
+function testbits(st, Abits)
+    reset!(st)
+    st.A = 0
+    for i in eachindex(Abits)
+        if Abits[i] > 0.5
+            st.A = st.A | (1 << (i - 1))
         end
     end
-
-    return z
+    run!(st)
 end
 
-function shr(kb::KnownBits, n::KnownBits)::KnownBits
-    out = emptyknownbits(length(kb.bits))
-    # If we know all bits, we can do the shift
-    if isfullyknown(n)
-        return shr(kb, tonumber(n))
-    elseif ms1(n) >= length(kb.bits)
-        # Every unknown is shifted out and we are left with all zeroes
-        for i in length(kb.bits)
-            out.bits[i] = 0
-            out.known[i] = 1
+function test(st, A)
+    reset!(st)
+    st.A = A
+    run!(st)
+end
+
+function solve()
+    @info "Loading solution"
+    st = load_systemstate_and_program()
+    initial = buildquine(st)
+    final = finish_bruteforce(st, initial)
+    out = Int64(0)
+    for i in eachindex(final)
+        if final[i] > 0.5
+            out = out | (1 << (i - 1))
         end
     end
-
     return out
-end
-
-function xor(lhs::KnownBits, rhs::KnownBits)::KnownBits
-    @assert length(lhs.bits) == length(rhs.bits)
-    out = emptyknownbits(length(lhs.bits))
-    for i in 1:length(lhs.bits)
-        if lhs.known[i] && rhs.known[i]
-            out.known[i] = 1
-            out.bits[i] = lhs.bits[i] ⊻ rhs.bits[i]
-        else
-            out.known[i] = 0
-            out.bits[i] = 0
-        end
-    end
-    return out
-end
-
-
-# The rules are:
-# A[i+1] = A[i]>>3
-# C[i+1] = A[i] >> B[i] xor 0b10
-# B[i+1] = ((B[i] xor 2) xor C[i+1]) xor 3
-# And the output value is B[i+1] & 0b111
-# We set the lower 3 bits of each B[i+1]
-# Furthermore, we have the condition that A must be minimum, thus at any point 
-# that we may freely choose bits, we choose them to be 0
-function findquine(prog)
-    # Condition 2^45 < A < 2^46 implies bit 45 of A is set and any bit bigger than 46 is unset
-    # A is simply right-shifted each iteration, so its value is "unique"
-    a = emptyknownbits(45)
-    knowbit!(a, 45, 1)
-
-    # Each bit in B and C is eventually a (very complex) function of A
-    bs = [emptyknownbits(45) for i = 1:length(prog)+1]
-    cs = [emptyknownbits(45) for i = 1:length(prog)+1]
-    for i in 1:45
-        knowbit!(bs[1], i, 0)
-        knowbit!(cs[1], i, 0)
-    end
-
-    for it in eachindex(prog)
-        locala = shr(a, (it - 1) * 3)
-        display(bs[it])
-        cs[it+1] = shr(locala, xor(bs[it], knownnumber(2, 45)))
-
-        bs[it+1] = xor(xor(xor(bs[it], knownnumber(2, 45)), cs[it+1]), knownnumber(3, 45))
-
-    end
 end
